@@ -3,19 +3,14 @@ import QtQuick.Layouts
 import org.kde.kwin
 import org.kde.plasma.components as PlasmaComponents
 import org.kde.plasma.core as PlasmaCore
-
+import "js/core.mjs" as Core
+import "js/utils.mjs" as Utils
 import "components" as Components
 
-PlasmaCore.Dialog {
-
-    // api documentation
-    // https://api.kde.org/frameworks/plasma-framework/html/classPlasmaQuick_1_1Dialog.html
-    // https://api.kde.org/frameworks/plasma-framework/html/classPlasma_1_1Types.html
-    // https://develop.kde.org/docs/getting-started/kirigami/style-colors/
-
-    id: mainDialog
-
-    // properties
+Item {
+    id: root
+    
+    property int highlightedZone: -1
     property bool shown: false
     property bool moving: false
     property bool moved: false
@@ -25,80 +20,360 @@ PlasmaCore.Dialog {
     property var displaySize: ({})
     property int currentLayout: 0
     property var screenLayouts: ({})
-    property int highlightedZone: -1
     property var activeScreen: null
     property var config: ({})
     property bool showZoneOverlay: config.zoneOverlayShowWhen == 0
     property var errors: []
 
-    title: "KZones Overlay"
-    location: PlasmaCore.Types.Desktop
-    type: PlasmaCore.Dialog.OnScreenDisplay
-    backgroundHints: PlasmaCore.Types.NoBackground
-    flags: Qt.BypassWindowManagerHint | Qt.FramelessWindowHint | Qt.Popup
-    hideOnWindowDeactivate: true
-    visible: false
-    outputOnly: true
-    opacity: 1
-    width: displaySize.width
-    height: displaySize.height
+    PlasmaCore.Dialog {
 
-    function loadConfig() {
+        // api documentation
+        // https://api.kde.org/frameworks/plasma-framework/html/classPlasmaQuick_1_1Dialog.html
+        // https://api.kde.org/frameworks/plasma-framework/html/classPlasma_1_1Types.html
+        // https://develop.kde.org/docs/getting-started/kirigami/style-colors/
 
-        const defaultLayouts = '[{"name":"Priority Grid","padding":0,"zones":[{"x":0,"y":0,"height":100,"width":25},{"x":25,"y":0,"height":100,"width":50},{"x":75,"y":0,"height":100,"width":25}]},{"name":"Quadrant Grid","zones":[{"x":0,"y":0,"height":50,"width":50},{"x":0,"y":50,"height":50,"width":50},{"x":50,"y":50,"height":50,"width":50},{"x":50,"y":0,"height":50,"width":50}]}]'
+        id: mainDialog
 
-        let layouts;
+        // properties
+        
 
-        try {
-            layouts = JSON.parse(KWin.readConfig("layoutsJson", defaultLayouts));
-        } catch (e) {
-            errors = errors.concat(`Could not load layouts from configuration, using default layouts.\nError: ${e.message}`);
-            layouts = JSON.parse(defaultLayouts);
+        title: "KZones Overlay"
+        location: PlasmaCore.Types.Desktop
+        type: PlasmaCore.Dialog.OnScreenDisplay
+        backgroundHints: PlasmaCore.Types.NoBackground
+        flags: Qt.BypassWindowManagerHint | Qt.FramelessWindowHint | Qt.Popup
+        hideOnWindowDeactivate: true
+        visible: false
+        outputOnly: true
+        opacity: 1
+        width: displaySize.width
+        height: displaySize.height
+
+        function show() {
+            // show OSD
+            console.log("KZones: Show");
+            root.shown = true;
+            mainDialog.visible = true;
+            mainDialog.setWidth(Workspace.virtualScreenSize.width);
+            mainDialog.setHeight(Workspace.virtualScreenSize.height);
+            refreshClientArea();
         }
 
-        // load values from configuration
-        config = {
-            // enable zone selector
-            enableZoneSelector: KWin.readConfig("enableZoneSelector", true),
-            // distance from the top of the screen to trigger the zone selector
-            zoneSelectorTriggerDistance: KWin.readConfig("zoneSelectorTriggerDistance", 1),
-            // enable zone overlay
-            enableZoneOverlay: KWin.readConfig("enableZoneOverlay", true),
-            // show zone overlay when
-            zoneOverlayShowWhen: KWin.readConfig("zoneOverlayShowWhen", 0),
-            // highlight target zone
-            zoneOverlayHighlightTarget: KWin.readConfig("zoneOverlayHighlightTarget", 0),
-            // zone overlay indicator display
-            zoneOverlayIndicatorDisplay: KWin.readConfig("zoneOverlayIndicatorDisplay", 0),
-            // enable edge snapping
-            enableEdgeSnapping: KWin.readConfig("enableEdgeSnapping", false),
-            // distance from the edge of the screen to trigger the edge snapping
-            edgeSnappingTriggerDistance: KWin.readConfig("edgeSnappingTriggerDistance", 1),
-            // remember window geometries before snapping to a zone, and restore them when the window is removed from their zone
-            rememberWindowGeometries: KWin.readConfig("rememberWindowGeometries", true),
-            // track active layout per screen
-            trackLayoutPerScreen: KWin.readConfig("trackLayoutPerScreen", false),
-            // show osd messages
-            showOsdMessages: KWin.readConfig("showOsdMessages", true),
-            // fade windows while moving
-            fadeWindowsWhileMoving: KWin.readConfig("fadeWindowsWhileMoving", false),
-            // auto snap all windows
-            autoSnapAllNew: KWin.readConfig("autoSnapAllNew", false),
-            // layouts
-            layouts: layouts,
-            // filter mode
-            filterMode: KWin.readConfig("filterMode", 0),
-            // filter list
-            filterList: KWin.readConfig("filterList", ""),
-            // polling rate in milliseconds
-            pollingRate: KWin.readConfig("pollingRate", 100),
-            // enable debug logging
-            enableDebugLogging: KWin.readConfig("enableDebugLogging", false),
-            // enable debug overlay
-            enableDebugOverlay: KWin.readConfig("enableDebugOverlay", false)
-        };
+        function hide() {
+            // hide OSD
+            root.shown = false;
+            mainDialog.visible = false;
+            zoneSelector.expanded = false;
+            zoneSelector.near = false;
+            root.highlightedZone = -1;
+            showZoneOverlay = config.zoneOverlayShowWhen == 0;
+        }
 
-        log("Config loaded: " + JSON.stringify(config));
+        Components.ColorHelper {
+            id: colorHelper
+        }
+
+        Components.Shortcuts {
+            onCycleLayouts: {
+                setCurrentLayout((currentLayout + 1) % config.layouts.length);
+                root.highlightedZone = -1;
+                osdDbus.exec(config.trackLayoutPerScreen ? `${config.layouts[currentLayout].name} (${Workspace.activeScreen.name})` : config.layouts[currentLayout].name);
+            }
+
+            onCycleLayoutsReversed: {
+                setCurrentLayout((currentLayout - 1 + config.layouts.length) % config.layouts.length);
+                root.highlightedZone = -1;
+                osdDbus.exec(config.trackLayoutPerScreen ? `${config.layouts[currentLayout].name} (${Workspace.activeScreen.name})` : config.layouts[currentLayout].name);
+            }
+
+            onMoveActiveWindowToNextZone: {
+                const client = Workspace.activeWindow;
+                if (client.zone == -1) moveClientToClosestZone(client);
+                const zonesLength = config.layouts[currentLayout].zones.length;
+                moveClientToZone(client, (client.zone + 1) % zonesLength);
+            }
+
+            onMoveActiveWindowToPreviousZone: {
+                const client = Workspace.activeWindow;
+                if (client.zone == -1) moveClientToClosestZone(client);
+                const zonesLength = config.layouts[currentLayout].zones.length;
+                moveClientToZone(client, (client.zone - 1 + zonesLength) % zonesLength);
+            }
+
+            onToggleZoneOverlay: {
+                if (!config.enableZoneOverlay) {
+                    osdDbus.exec("Zone overlay is disabled");
+                }
+                else if (moving) {
+                    showZoneOverlay = !showZoneOverlay;
+                }
+                else {
+                    osdDbus.exec("The overlay can only be shown while moving a window");
+                }
+            }
+
+            onSwitchToNextWindowInCurrentZone: {
+                switchWindowInZone(Workspace.activeWindow.zone, Workspace.activeWindow.layout);
+            }
+
+            onSwitchToPreviousWindowInCurrentZone: {
+                switchWindowInZone(Workspace.activeWindow.zone, Workspace.activeWindow.layout, true);
+            }
+
+            onMoveActiveWindowToZone: {
+                moveClientToZone(Workspace.activeWindow, zone);
+            }
+
+            onActivateLayout: {
+                if (layout <= config.layouts.length - 1) {
+                    setCurrentLayout(layout);
+                    root.highlightedZone = -1;
+                    osdDbus.exec(config.trackLayoutPerScreen ? `${config.layouts[currentLayout].name} (${Workspace.activeScreen.name})` : config.layouts[currentLayout].name);
+                } else {
+                    osdDbus.exec(`Layout ${layout + 1} does not exist`);
+                }
+            }
+
+            onMoveActiveWindowUp: {
+                moveClientToNeighbour(Workspace.activeWindow, "up");
+            }
+
+            onMoveActiveWindowDown: {
+                moveClientToNeighbour(Workspace.activeWindow, "down");
+            }
+
+            onMoveActiveWindowLeft: {
+                moveClientToNeighbour(Workspace.activeWindow, "left");
+            }
+
+            onMoveActiveWindowRight: {
+                moveClientToNeighbour(Workspace.activeWindow, "right");
+            }
+
+            onSnapActiveWindow: {
+                moveClientToClosestZone(Workspace.activeWindow);
+            }
+
+            onSnapAllWindows: {
+                moveAllClientsToClosestZone();
+            }
+        }
+
+        Component.onCompleted: {
+            console.log("Loading script (" + Qt.resolvedUrl("./main.qml") + ")");
+            Core.init(KWin, Workspace);
+            Core.registerQMLComponent("root", root);
+            Core.loadConfig();
+
+            // refresh client area
+            refreshClientArea();
+
+            // match all clients to zones and connect signals
+            for (let i = 0; i < Workspace.stackingOrder.length; i++) {
+                matchZone(Workspace.stackingOrder[i]);
+                connectSignals(Workspace.stackingOrder[i]);
+            }
+        }
+
+        Item {
+            id: mainItem
+            property alias repeaterLayout: repeaterLayout
+
+            // main polling timer
+            Timer {
+                id: timer
+
+                triggeredOnStart: true
+                interval: config.pollingRate
+                running: root.shown && moving
+                repeat: true
+
+                onTriggered: {
+                    refreshClientArea();
+
+                    let hoveringZone = -1;
+
+                    // zone overlay
+                    const currentZones = mainItem.repeaterLayout.itemAt(currentLayout)
+                    if (config.enableZoneOverlay && showZoneOverlay && !zoneSelector.expanded) {
+                        currentZones.repeater.model.forEach((zone, zoneIndex) => {
+                            if (Utils.isHovering(currentZones.repeater.itemAt(zoneIndex).children[config.zoneOverlayHighlightTarget])) {
+                                hoveringZone = zoneIndex;
+                            }
+                        });
+                    }
+
+                    // zone selector
+                    if (config.enableZoneSelector) {
+                        if (!zoneSelector.animating && zoneSelector.expanded) {
+                            zoneSelector.repeater.model.forEach((layout, layoutIndex) => {
+                                const layoutItem = zoneSelector.repeater.itemAt(layoutIndex);
+                                layout.zones.forEach((zone, zoneIndex) => {
+                                    const zoneItem = layoutItem.children[zoneIndex];
+                                    if (Utils.isHovering(zoneItem)) {
+                                        hoveringZone = zoneIndex;
+                                        setCurrentLayout(layoutIndex);
+                                    }
+                                });
+                            });
+                        }
+                        // set zoneSelector expansion state
+                        zoneSelector.expanded = Utils.isHovering(zoneSelector) && (Workspace.cursorPos.y - clientArea.y) >= 0;
+                        // set zoneSelector near state
+                        const triggerDistance = config.zoneSelectorTriggerDistance * 50 + 25;
+                        zoneSelector.near = (Workspace.cursorPos.y - clientArea.y) < zoneSelector.y + zoneSelector.height + triggerDistance;
+                    }
+
+                    // edge snapping
+                    if (config.enableEdgeSnapping) {
+                        const triggerDistance = (config.edgeSnappingTriggerDistance + 1) * 10;
+                        if (Workspace.cursorPos.x <= clientArea.x + triggerDistance || Workspace.cursorPos.x >= clientArea.x + clientArea.width - triggerDistance || Workspace.cursorPos.y <= clientArea.y + triggerDistance || Workspace.cursorPos.y >= clientArea.y + clientArea.height - triggerDistance) {
+                            const padding = config.layouts[currentLayout].padding || 0;
+                            const halfPadding = padding/2;
+                            currentZones.repeater.model.forEach((zone, zoneIndex) => {
+                                const zoneItem = currentZones.repeater.itemAt(zoneIndex);
+                                const itemGlobal = zoneItem.mapToGlobal(Qt.point(0, 0));
+                                let zoneGeometry = {
+                                    x: itemGlobal.x - padding/2,
+                                    y: itemGlobal.y - padding/2,
+                                    width: zoneItem.width + padding,
+                                    height: zoneItem.height + padding
+                                };
+                                if(zoneGeometry.x <= halfPadding ) { zoneGeometry.x = 0; zoneGeometry.width += padding; }   //adjust most left edge
+                                if(zoneGeometry.y <= halfPadding ) { zoneGeometry.y = 0; zoneGeometry.height += padding; }  //adjust most top edge
+                                if(zoneGeometry.x + zoneGeometry.width >= clientArea.width - halfPadding ) {                //adjust most right edge
+                                    zoneGeometry.width += halfPadding;
+                                }
+                                if(zoneGeometry.y + zoneGeometry.height >= clientArea.height - halfPadding ) {              //adjust most bottom edge
+                                    zoneGeometry.height += halfPadding;
+                                }
+                                if (Utils.isPointInside(Workspace.cursorPos.x, Workspace.cursorPos.y, zoneGeometry)) {
+                                    hoveringZone = zoneIndex;
+                                }
+                            });
+                        }
+                    }
+
+                    // if hovering zone changed from the last frame
+                    if (hoveringZone != root.highlightedZone) {
+                        log("Highlighting zone " + hoveringZone + " in layout " + currentLayout);
+                        root.highlightedZone = hoveringZone;
+                    }
+
+                }
+            }
+
+            DBusCall {
+                id: osdDbus
+
+                service: "org.kde.plasmashell"
+                path: "/org/kde/osdService"
+                method: "showText"
+
+                function exec(text, icon = "preferences-desktop-virtual") {
+                    if (!config.showOsdMessages) return;
+                    this.arguments = [icon, text];
+                    this.call();
+                }
+            }
+
+            Item {
+                x: clientArea.x || 0
+                y: clientArea.y || 0
+                width: clientArea.width || 0
+                height: clientArea.height || 0
+                clip: true
+
+                Components.Debug {
+                    info: ({
+                        activeWindow: {
+                            caption: Workspace.activeWindow?.caption,
+                            resourceClass: Workspace.activeWindow?.resourceClass?.toString(),
+                            frameGeometry: {
+                                x: Workspace.activeWindow?.frameGeometry?.x,
+                                y: Workspace.activeWindow?.frameGeometry?.y,
+                                width: Workspace.activeWindow?.frameGeometry?.width,
+                                height: Workspace.activeWindow?.frameGeometry?.height
+                            },
+                            zone: Workspace.activeWindow?.zone
+                        },
+                        highlightedZone: root.highlightedZone,
+                        moving: moving,
+                        resizing: resizing,
+                        oldGeometry: Workspace.activeWindow?.oldGeometry,
+                        activeScreen: activeScreen?.name,
+                        currentLayout: currentLayout,
+                        screenLayouts: screenLayouts
+                    })
+                    errors: root.errors
+                    config: root.config
+                }
+
+                Repeater {
+                    id: repeaterLayout
+                    model: config.layouts
+
+                    Components.Zones {
+                        id: zones
+                        config: root.config
+                        currentLayout: root.currentLayout
+                        highlightedZone: root.highlightedZone
+                        layoutIndex: index
+                        visible: index == root.currentLayout
+                    }
+                }
+
+                Components.Selector {
+                    id: zoneSelector
+                    config: root.config
+                    currentLayout: root.currentLayout
+                    highlightedZone: root.highlightedZone
+                }
+            }
+
+            // workspace connection
+            Connections {
+                target: Workspace
+
+                function onWindowAdded(client) {
+
+                    connectSignals(client);
+
+                    // check if client is in a zone application list
+                    config.layouts[currentLayout].zones.forEach((zone, zoneIndex) => {
+                        if (zone.applications && zone.applications.includes(client.resourceClass.toString())) {
+                            moveClientToZone(client, zoneIndex);
+                            return;
+                        }
+                    });
+
+                    // auto snap to closest zone
+                    if (config.autoSnapAllNew && checkFilter(client)) {
+                        moveClientToClosestZone(client);
+                    }
+
+                    // check if new window spawns in a zone
+                    if (client.zone == undefined || client.zone == -1) matchZone(client);
+
+                }
+            }
+
+            // reusable timer
+            Timer {
+                id: delay
+
+                function setTimeout(callback, timeout) {
+                    delay.interval = timeout;
+                    delay.repeat = false;
+                    delay.triggered.connect(callback);
+                    delay.triggered.connect(function release() {
+                        delay.triggered.disconnect(callback);
+                        delay.triggered.disconnect(release);
+                    });
+                    delay.start();
+                }
+            }
+        }
     }
 
     function log(message) {
@@ -106,45 +381,11 @@ PlasmaCore.Dialog {
         console.log("KZones: " + message);
     }
 
-    function show() {
-        // show OSD
-        console.log("KZones: Show");
-        mainDialog.shown = true;
-        mainDialog.visible = true;
-        mainDialog.setWidth(Workspace.virtualScreenSize.width);
-        mainDialog.setHeight(Workspace.virtualScreenSize.height);
-        refreshClientArea();
-    }
-
-    function hide() {
-        // hide OSD
-        mainDialog.shown = false;
-        mainDialog.visible = false;
-        zoneSelector.expanded = false;
-        zoneSelector.near = false;
-        highlightedZone = -1;
-        showZoneOverlay = config.zoneOverlayShowWhen == 0;
-    }
-
     function refreshClientArea() {
         activeScreen = Workspace.activeScreen;
         clientArea = Workspace.clientArea(KWin.FullScreenArea, activeScreen, Workspace.currentDesktop);
         displaySize = Workspace.virtualScreenSize;
         currentLayout = getCurrentLayout();
-    }
-
-    function isPointInside(x, y, geometry) {
-        return x >= geometry.x && x <= geometry.x + geometry.width && y >= geometry.y && y <= geometry.y + geometry.height;
-    }
-
-    function isHovering(item) {
-        const itemGlobal = item.mapToGlobal(Qt.point(0, 0));
-        return isPointInside(Workspace.cursorPos.x, Workspace.cursorPos.y, {
-            x: itemGlobal.x,
-            y: itemGlobal.y,
-            width: item.width * item.scale,
-            height: item.height * item.scale
-        });
     }
 
     function checkFilter(client) {
@@ -553,13 +794,13 @@ PlasmaCore.Dialog {
             if (moving) {
                 log("Move end " + client.resourceClass.toString());
                 if (moved) {
-                    if (shown) {
-                        moveClientToZone(client, highlightedZone);
+                    if (root.shown) {
+                        moveClientToZone(client, root.highlightedZone);
                     } else {
                         saveClientProperties(client, -1);
                     }
                 }
-                hide();
+                mainDialog.hide();
             }  else if (resizing) {
                 matchZone(client);
                 log("Resizing end: Matched client " + client.resourceClass.toString() + " to layout.zone " + client.layout + " " + client.zone );
@@ -594,318 +835,5 @@ PlasmaCore.Dialog {
             mainDialog.hide();
         }
 
-    }
-
-    Components.ColorHelper {
-        id: colorHelper
-    }
-
-    Components.Shortcuts {
-        onCycleLayouts: {
-            setCurrentLayout((currentLayout + 1) % config.layouts.length);
-            highlightedZone = -1;
-            osdDbus.exec(config.trackLayoutPerScreen ? `${config.layouts[currentLayout].name} (${Workspace.activeScreen.name})` : config.layouts[currentLayout].name);
-        }
-
-        onCycleLayoutsReversed: {
-            setCurrentLayout((currentLayout - 1 + config.layouts.length) % config.layouts.length);
-            highlightedZone = -1;
-            osdDbus.exec(config.trackLayoutPerScreen ? `${config.layouts[currentLayout].name} (${Workspace.activeScreen.name})` : config.layouts[currentLayout].name);
-        }
-
-        onMoveActiveWindowToNextZone: {
-            const client = Workspace.activeWindow;
-            if (client.zone == -1) moveClientToClosestZone(client);
-            const zonesLength = config.layouts[currentLayout].zones.length;
-            moveClientToZone(client, (client.zone + 1) % zonesLength);
-        }
-
-        onMoveActiveWindowToPreviousZone: {
-            const client = Workspace.activeWindow;
-            if (client.zone == -1) moveClientToClosestZone(client);
-            const zonesLength = config.layouts[currentLayout].zones.length;
-            moveClientToZone(client, (client.zone - 1 + zonesLength) % zonesLength);
-        }
-
-        onToggleZoneOverlay: {
-            if (!config.enableZoneOverlay) {
-                osdDbus.exec("Zone overlay is disabled");
-            }
-            else if (moving) {
-                showZoneOverlay = !showZoneOverlay;
-            }
-            else {
-                osdDbus.exec("The overlay can only be shown while moving a window");
-            }
-        }
-
-        onSwitchToNextWindowInCurrentZone: {
-            switchWindowInZone(Workspace.activeWindow.zone, Workspace.activeWindow.layout);
-        }
-
-        onSwitchToPreviousWindowInCurrentZone: {
-            switchWindowInZone(Workspace.activeWindow.zone, Workspace.activeWindow.layout, true);
-        }
-
-        onMoveActiveWindowToZone: {
-            moveClientToZone(Workspace.activeWindow, zone);
-        }
-
-        onActivateLayout: {
-            if (layout <= config.layouts.length - 1) {
-                setCurrentLayout(layout);
-                highlightedZone = -1;
-                osdDbus.exec(config.trackLayoutPerScreen ? `${config.layouts[currentLayout].name} (${Workspace.activeScreen.name})` : config.layouts[currentLayout].name);
-            } else {
-                osdDbus.exec(`Layout ${layout + 1} does not exist`);
-            }
-        }
-
-        onMoveActiveWindowUp: {
-            moveClientToNeighbour(Workspace.activeWindow, "up");
-        }
-
-        onMoveActiveWindowDown: {
-            moveClientToNeighbour(Workspace.activeWindow, "down");
-        }
-
-        onMoveActiveWindowLeft: {
-            moveClientToNeighbour(Workspace.activeWindow, "left");
-        }
-
-        onMoveActiveWindowRight: {
-            moveClientToNeighbour(Workspace.activeWindow, "right");
-        }
-
-        onSnapActiveWindow: {
-            moveClientToClosestZone(Workspace.activeWindow);
-        }
-
-        onSnapAllWindows: {
-            moveAllClientsToClosestZone();
-        }
-    }
-
-    Component.onCompleted: {
-        // refresh client area
-        refreshClientArea();
-        mainDialog.loadConfig();
-
-        // match all clients to zones and connect signals
-        for (let i = 0; i < Workspace.stackingOrder.length; i++) {
-            matchZone(Workspace.stackingOrder[i]);
-            connectSignals(Workspace.stackingOrder[i]);
-        }
-    }
-
-    Item {
-        id: mainItem
-        property alias repeaterLayout: repeaterLayout
-
-        // main polling timer
-        Timer {
-            id: timer
-
-            triggeredOnStart: true
-            interval: config.pollingRate
-            running: shown && moving
-            repeat: true
-
-            onTriggered: {
-                refreshClientArea();
-
-                let hoveringZone = -1;
-
-                // zone overlay
-                const currentZones = repeaterLayout.itemAt(currentLayout)
-                if (config.enableZoneOverlay && showZoneOverlay && !zoneSelector.expanded) {
-                    currentZones.repeater.model.forEach((zone, zoneIndex) => {
-                        if (isHovering(currentZones.repeater.itemAt(zoneIndex).children[config.zoneOverlayHighlightTarget])) {
-                            hoveringZone = zoneIndex;
-                        }
-                    });
-                }
-
-                // zone selector
-                if (config.enableZoneSelector) {
-                    if (!zoneSelector.animating && zoneSelector.expanded) {
-                        zoneSelector.repeater.model.forEach((layout, layoutIndex) => {
-                            const layoutItem = zoneSelector.repeater.itemAt(layoutIndex);
-                            layout.zones.forEach((zone, zoneIndex) => {
-                                const zoneItem = layoutItem.children[zoneIndex];
-                                if (isHovering(zoneItem)) {
-                                    hoveringZone = zoneIndex;
-                                    setCurrentLayout(layoutIndex);
-                                }
-                            });
-                        });
-                    }
-                    // set zoneSelector expansion state
-                    zoneSelector.expanded = isHovering(zoneSelector) && (Workspace.cursorPos.y - clientArea.y) >= 0;
-                    // set zoneSelector near state
-                    const triggerDistance = config.zoneSelectorTriggerDistance * 50 + 25;
-                    zoneSelector.near = (Workspace.cursorPos.y - clientArea.y) < zoneSelector.y + zoneSelector.height + triggerDistance;
-                }
-
-                // edge snapping
-                if (config.enableEdgeSnapping) {
-                    const triggerDistance = (config.edgeSnappingTriggerDistance + 1) * 10;
-                    if (Workspace.cursorPos.x <= clientArea.x + triggerDistance || Workspace.cursorPos.x >= clientArea.x + clientArea.width - triggerDistance || Workspace.cursorPos.y <= clientArea.y + triggerDistance || Workspace.cursorPos.y >= clientArea.y + clientArea.height - triggerDistance) {
-                        const padding = config.layouts[currentLayout].padding || 0;
-                        const halfPadding = padding/2;
-                        currentZones.repeater.model.forEach((zone, zoneIndex) => {
-                            const zoneItem = currentZones.repeater.itemAt(zoneIndex);
-                            const itemGlobal = zoneItem.mapToGlobal(Qt.point(0, 0));
-                            let zoneGeometry = {
-                                x: itemGlobal.x - padding/2,
-                                y: itemGlobal.y - padding/2,
-                                width: zoneItem.width + padding,
-                                height: zoneItem.height + padding
-                             };
-                            if(zoneGeometry.x <= halfPadding ) { zoneGeometry.x = 0; zoneGeometry.width += padding; }   //adjust most left edge
-                            if(zoneGeometry.y <= halfPadding ) { zoneGeometry.y = 0; zoneGeometry.height += padding; }  //adjust most top edge
-                            if(zoneGeometry.x + zoneGeometry.width >= clientArea.width - halfPadding ) {                //adjust most right edge
-                                  zoneGeometry.width += halfPadding;
-                            }
-                            if(zoneGeometry.y + zoneGeometry.height >= clientArea.height - halfPadding ) {              //adjust most bottom edge
-                                zoneGeometry.height += halfPadding;
-                            }
-                            if (isPointInside(Workspace.cursorPos.x, Workspace.cursorPos.y, zoneGeometry)) {
-                                hoveringZone = zoneIndex;
-                            }
-                        });
-                    }
-                }
-
-                // if hovering zone changed from the last frame
-                if (hoveringZone != highlightedZone) {
-                    log("Highlighting zone " + hoveringZone + " in layout " + currentLayout);
-                    highlightedZone = hoveringZone;
-                }
-
-            }
-        }
-
-        DBusCall {
-            id: osdDbus
-
-            service: "org.kde.plasmashell"
-            path: "/org/kde/osdService"
-            method: "showText"
-
-            function exec(text, icon = "preferences-desktop-virtual") {
-                if (!config.showOsdMessages) return;
-                this.arguments = [icon, text];
-                this.call();
-            }
-        }
-
-        Item {
-            x: clientArea.x || 0
-            y: clientArea.y || 0
-            width: clientArea.width || 0
-            height: clientArea.height || 0
-            clip: true
-
-            Components.Debug {
-                info: ({
-                    activeWindow: {
-                        caption: Workspace.activeWindow?.caption,
-                        resourceClass: Workspace.activeWindow?.resourceClass?.toString(),
-                        frameGeometry: {
-                            x: Workspace.activeWindow?.frameGeometry?.x,
-                            y: Workspace.activeWindow?.frameGeometry?.y,
-                            width: Workspace.activeWindow?.frameGeometry?.width,
-                            height: Workspace.activeWindow?.frameGeometry?.height
-                        },
-                        zone: Workspace.activeWindow?.zone
-                    },
-                    highlightedZone: highlightedZone,
-                    moving: moving,
-                    resizing: resizing,
-                    oldGeometry: Workspace.activeWindow?.oldGeometry,
-                    activeScreen: activeScreen?.name,
-                    currentLayout: currentLayout,
-                    screenLayouts: screenLayouts
-                })
-                errors: mainDialog.errors
-                config: mainDialog.config
-            }
-
-            Repeater {
-                id: repeaterLayout
-                model: config.layouts
-
-                Components.Zones {
-                    id: zones
-                    config: mainDialog.config
-                    currentLayout: mainDialog.currentLayout
-                    highlightedZone: mainDialog.highlightedZone
-                    layoutIndex: index
-                    visible: index == mainDialog.currentLayout
-                }
-            }
-
-            Components.Selector {
-                id: zoneSelector
-                config: mainDialog.config
-                currentLayout: mainDialog.currentLayout
-                highlightedZone: mainDialog.highlightedZone
-            }
-        }
-
-        // workspace connection
-        Connections {
-            target: Workspace
-
-            function onWindowAdded(client) {
-
-                connectSignals(client);
-
-                // check if client is in a zone application list
-                config.layouts[currentLayout].zones.forEach((zone, zoneIndex) => {
-                    if (zone.applications && zone.applications.includes(client.resourceClass.toString())) {
-                        moveClientToZone(client, zoneIndex);
-                        return;
-                    }
-                });
-
-                // auto snap to closest zone
-                if (config.autoSnapAllNew && checkFilter(client)) {
-                    moveClientToClosestZone(client);
-                }
-
-                // check if new window spawns in a zone
-                if (client.zone == undefined || client.zone == -1) matchZone(client);
-
-            }
-        }
-
-        // options connection
-        Connections {
-            //! not working at the moment
-            target: Options
-
-            function onConfigChanged() {
-                log("Config changed");
-                mainDialog.loadConfig();
-            }
-        }
-
-        // reusable timer
-        Timer {
-            id: delay
-
-            function setTimeout(callback, timeout) {
-                delay.interval = timeout;
-                delay.repeat = false;
-                delay.triggered.connect(callback);
-                delay.triggered.connect(function release() {
-                    delay.triggered.disconnect(callback);
-                    delay.triggered.disconnect(release);
-                });
-                delay.start();
-            }
-        }
     }
 }
